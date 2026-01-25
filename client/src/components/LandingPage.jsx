@@ -8,7 +8,7 @@ function LandingPage() {
 
   const createRoom = () => {
     const id = uuidV4();
-    navigator.clipboard.write(`http://localhost:5173/room/${id}`);
+    navigator.clipboard.writeText(`http://localhost:5173/room/${id}`);
     setRoomId(id);
     navigate(`/room/${id}?host=true`);
   };
