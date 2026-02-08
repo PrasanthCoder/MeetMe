@@ -1,17 +1,82 @@
-const express = require("express");
+import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import { v4 as uuidV4 } from "uuid";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import "dotenv/config";
+import cors from "cors";
+
 const app = express();
-const server = require("http").createServer(app);
-const io = require("socket.io")(server, {
+const server = createServer(app);
+const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173", // Allow React app origin
+    origin: "http://localhost:5173",
     methods: ["GET", "POST"],
     credentials: true,
   },
 });
-const { v4: uuidV4 } = require("uuid");
 
-// Serve static files (optional for now, can host client separately)
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"],
+    credentials: true,
+  }),
+);
+
+// Middleware to parse JSON bodies
+app.use(express.json());
 app.use(express.static("../client/dist"));
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+app.post("/api/summarize", async (req, res) => {
+  try {
+    const { transcript } = req.body;
+
+    if (!transcript || !Array.isArray(transcript)) {
+      return res.status(400).json({ error: "Invalid transcript format" });
+    }
+
+    // Format transcript: "Speaker ID: text"
+    const formattedTranscript = transcript
+      .map((t) => `Speaker ${t.speakerId}: ${t.text}`)
+      .join("\n");
+
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    const prompt = `
+      You are a meeting assistant. Based on the transcript below, provide a summary in JSON format.
+      Return ONLY the JSON with this structure:
+      {
+        "actions": [{"text": "task string", "speakerId": "id"}],
+        "decisions": [{"text": "decision string", "speakerId": "id"}],
+        "summary": "one paragraph overview"
+      }
+      
+      Transcript:
+      ${formattedTranscript}
+    `;
+
+    const result = await model.generateContent(prompt);
+    const responseText = result.response.text();
+
+    // Clean up potential markdown code blocks from AI response
+    const cleanJson = responseText.replace(/```json|```/g, "").trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(cleanJson);
+    } catch (e) {
+      console.error("Invalid JSON from Gemini:", cleanJson);
+      return res.status(500).json({ error: "AI returned invalid JSON" });
+    }
+
+    res.json(parsed);
+  } catch (error) {
+    console.error("Gemini Error:", error);
+    res.status(500).json({ error: "Failed to process transcript" });
+  }
+});
 
 const rooms = new Map(); // roomId -> { host: userId, users: [userId1, userId2] }
 
@@ -83,6 +148,11 @@ io.on("connection", (socket) => {
       socket.to(roomId).emit("user-disconnected", userId);
       handleUserLeave(roomId, userId);
       console.log("room: ", rooms.get(roomId));
+    });
+
+    socket.on("transcript-chunk", (roomId, chunk) => {
+      console.log(chunk);
+      socket.to(roomId).emit("transcript-chunk", chunk);
     });
   });
 });

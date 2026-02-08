@@ -16,20 +16,25 @@ function Room() {
   const streamRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const localScreenRef = useRef(null);
+  const ScreenRef = useRef(null);
   const cameraCallRef = useRef(null);
   const navigate = useNavigate();
   const peerRef = useRef(null);
 
-  const remoteScreenRef = useRef(null);
   const screenCallRef = useRef(null);
-  const screenStreamRef = useRef(null);
-  const remoteScreenStreamRef = useRef(null);
+  const screenStreamRef = useRef(null); // Local screen stream
+  const remoteScreenStreamRef = useRef(null); // Remote screen stream
 
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [isRemoteScreenSharing, setIsRemoteScreenSharing] = useState(false);
+  const [isSomeoneElseSharing, setIsSomeoneElseSharing] = useState(false);
+
+  // 🎙 Distributed transcription
+  const recognitionRef = useRef(null);
+  const transcriptLogRef = useRef([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [meetingNotes, setMeetingNotes] = useState(null);
 
   const hasRendered = useRef(false);
 
@@ -71,12 +76,14 @@ function Room() {
 
             call.on("stream", (remoteStream) => {
               remoteScreenStreamRef.current = remoteStream;
-              setIsRemoteScreenSharing(true);
+              setIsScreenSharing(true);
+              setIsSomeoneElseSharing(true);
             });
 
             call.on("close", () => {
               remoteScreenStreamRef.current = null;
-              setIsRemoteScreenSharing(false);
+              setIsScreenSharing(false);
+              setIsSomeoneElseSharing(false);
             });
           } else {
             call.answer(streamRef.current);
@@ -106,7 +113,8 @@ function Room() {
 
         socket.on("user-disconnected", (userId) => {
           remoteVideoRef.current.srcObject = null;
-          remoteScreenRef.current.srcObject = null;
+          setIsScreenSharing(false);
+          setIsSomeoneElseSharing(false);
           alert("User " + userId + " has left the call");
         });
 
@@ -115,6 +123,26 @@ function Room() {
             isHostRef.current = true;
             alert("You are now the host");
           }
+        });
+
+        socket.on("transcript-chunk", (chunk) => {
+          console.log(chunk);
+          transcriptLogRef.current.push(chunk);
+        });
+
+        socket.on("screen-share-started", (sharerId) => {
+          if (peerRef.current?.id !== sharerId) {
+            setIsSomeoneElseSharing(true);
+          }
+        });
+
+        socket.on("screen-share-stopped", () => {
+          setIsSomeoneElseSharing(false);
+          setIsScreenSharing(false); // Clean up remote view
+        });
+
+        socket.on("screen-share-denied", (message) => {
+          alert(message);
         });
 
         socket.on("room-not-found", () => {
@@ -135,33 +163,28 @@ function Room() {
       socket.off("user-connected");
       socket.off("user-disconnected");
       socket.off("room-not-found");
+      socket.off("transcript-chunk");
 
       currentPeer?.destroy();
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (isScreenSharing && localScreenRef.current && screenStreamRef.current) {
-      localScreenRef.current.srcObject = screenStreamRef.current;
+    if (isScreenSharing && ScreenRef.current && screenStreamRef.current) {
+      console.log("screenRef.current: ", ScreenRef.current);
+      ScreenRef.current.srcObject = screenStreamRef.current;
     }
-    if (!isScreenSharing && localScreenRef.current) {
-      localScreenRef.current.srcObject = null;
+    if (!isScreenSharing && ScreenRef.current) {
+      ScreenRef.current.srcObject = null;
     }
-    if (
-      isRemoteScreenSharing &&
-      remoteScreenRef.current &&
-      remoteScreenStreamRef.current
-    ) {
-      remoteScreenRef.current.srcObject = remoteScreenStreamRef.current;
+    if (isScreenSharing && ScreenRef.current && remoteScreenStreamRef.current) {
+      ScreenRef.current.srcObject = remoteScreenStreamRef.current;
     }
-
-    if (!isRemoteScreenSharing && remoteScreenRef.current) {
-      remoteScreenRef.current.srcObject = null;
-    }
-  }, [isRemoteScreenSharing, isScreenSharing]);
+  }, [isScreenSharing]);
 
   //Mute / Unmute
   const toggleMute = () => {
@@ -189,6 +212,7 @@ function Room() {
 
   // 🖥 Start screen share (SECOND CALL)
   const startScreenShare = async () => {
+    if (isSomeoneElseSharing) return;
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
@@ -196,13 +220,15 @@ function Room() {
 
       screenStreamRef.current = screenStream;
 
-      // 🔴 DO NOT touch localScreenRef here
+      socket.emit("request-screen-share", roomId, peerRef.current.id);
+
+      // 🔴 DO NOT touch ScreenRef here
       setIsScreenSharing(true);
 
       const call = peerRef.current.call(
         cameraCallRef.current.peer,
         screenStream,
-        { metadata: { type: "screen" } }
+        { metadata: { type: "screen" } },
       );
 
       screenCallRef.current = call;
@@ -214,6 +240,7 @@ function Room() {
   };
 
   const stopScreenShare = () => {
+    socket.emit("stop-screen-share-server", roomId);
     screenCallRef.current?.close();
     screenCallRef.current = null;
 
@@ -221,8 +248,8 @@ function Room() {
     screenStreamRef.current = null;
 
     // 👉 clear only screen preview
-    if (localScreenRef.current) {
-      localScreenRef.current.srcObject = null;
+    if (ScreenRef.current) {
+      ScreenRef.current.srcObject = null;
     }
 
     setIsScreenSharing(false);
@@ -231,6 +258,7 @@ function Room() {
   const leaveCall = () => {
     // Stop media
     streamRef.current?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
 
     // Notify server
     socket.emit("leave-room", roomId, peerRef.current?.id, isHostRef.current);
@@ -242,6 +270,78 @@ function Room() {
 
     // Navigate out
     navigate("/");
+  };
+
+  const startTranscription = () => {
+    if (isRecording) return;
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert("Speech Recognition not supported in this browser");
+      return;
+    }
+
+    console.log("recogniton starts");
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const text = event.results[i][0].transcript.trim();
+
+        const chunk = {
+          text,
+          timestamp: Date.now(),
+          speakerId: peerRef.current.id,
+        };
+
+        // Store locally
+        transcriptLogRef.current.push(chunk);
+        console.log(transcriptLogRef.current);
+        // Send to peer
+        socket.emit("transcript-chunk", roomId, chunk);
+      }
+    };
+
+    recognition.onend = () => {
+      // auto-restart while recording
+      if (isRecording) recognition.start();
+    };
+
+    recognition.start();
+    recognitionRef.current = recognition;
+    console.log(recognitionRef.current);
+    setIsRecording(true);
+  };
+
+  const stopTranscription = () => {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setIsRecording(false);
+  };
+
+  const generateNotes = async () => {
+    if (transcriptLogRef.current.length === 0)
+      return alert("No transcript available.");
+
+    setIsRecording(false); // Stop recording
+
+    try {
+      const response = await fetch("http://localhost:3000/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: transcriptLogRef.current }),
+      });
+
+      const data = await response.json();
+      setMeetingNotes(data); // This now sets the summary, actions, and decisions from Gemini
+    } catch (err) {
+      console.error("AI Error:", err);
+    }
   };
 
   return (
@@ -268,18 +368,9 @@ function Room() {
       <div className="flex flex-col md:flex-row gap-4 mb-4">
         {isScreenSharing && (
           <video
-            ref={localScreenRef}
+            ref={ScreenRef}
             autoPlay
             muted
-            playsInline
-            className="w-80 h-60 bg-black rounded"
-          />
-        )}
-
-        {isRemoteScreenSharing && (
-          <video
-            ref={remoteScreenRef}
-            autoPlay
             playsInline
             className="w-80 h-60 bg-black rounded"
           />
@@ -308,9 +399,34 @@ function Room() {
 
         <button
           onClick={isScreenSharing ? stopScreenShare : startScreenShare}
-          className="px-4 py-2 bg-blue-600"
+          disabled={isSomeoneElseSharing && isScreenSharing}
+          className={`px-4 py-2 ${
+            isSomeoneElseSharing && isScreenSharing
+              ? "bg-gray-500 cursor-not-allowed"
+              : "bg-blue-600"
+          }`}
         >
-          {isScreenSharing ? "Stop Share" : "Share Screen"}
+          {isSomeoneElseSharing
+            ? "Sharing Locked"
+            : isScreenSharing
+              ? "Stop Share"
+              : "Share Screen"}
+        </button>
+
+        <button
+          onClick={isRecording ? stopTranscription : startTranscription}
+          className={`px-4 py-2 rounded text-white ${
+            isRecording ? "bg-yellow-600" : "bg-gray-600"
+          }`}
+        >
+          {isRecording ? "Stop Notes" : "Start Notes"}
+        </button>
+
+        <button
+          onClick={generateNotes}
+          className="px-4 py-2 bg-purple-600 text-white rounded"
+        >
+          Generate Notes
         </button>
 
         <button
@@ -320,6 +436,42 @@ function Room() {
           Leave Call
         </button>
       </div>
+
+      {meetingNotes && (
+        <div className="mt-6 bg-gray-800 p-4 rounded text-white max-w-3xl">
+          <h3 className="text-xl mb-2">📝 AI-Assisted Meeting Notes</h3>
+
+          <h4 className="font-semibold">Action Items</h4>
+          <ul className="list-disc ml-6">
+            {meetingNotes.actions.map((a, i) => (
+              <li key={i}>
+                [{a.speakerId}] {a.text}
+                <span className="text-sm text-gray-400 ml-2">
+                  ({a.confidence})
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          <h4 className="font-semibold mt-4">Decisions</h4>
+          <ul className="list-disc ml-6">
+            {meetingNotes.decisions.map((d, i) => (
+              <li key={i}>
+                [{d.speakerId}] {d.text}
+              </li>
+            ))}
+          </ul>
+
+          <h4 className="font-semibold mt-4"></h4>
+
+          {meetingNotes.summary && (
+            <div className="mb-4 italic text-gray-300">
+              <h4 className="font-semibold text-white">Summary:</h4>
+              {meetingNotes.summary}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
