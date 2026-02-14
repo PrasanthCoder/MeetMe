@@ -2,79 +2,96 @@ import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { v4 as uuidV4 } from "uuid";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import Cerebras from "@cerebras/cerebras_cloud_sdk";
 import "dotenv/config";
-import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "http://localhost:5173",
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-});
-
-app.use(
-  cors({
-    origin: "http://localhost:5173",
-    methods: ["GET", "POST"],
-    credentials: true,
-  }),
-);
+const io = new Server(server);
 
 // Middleware to parse JSON bodies
 app.use(express.json());
-app.use(express.static("../client/dist"));
+app.use(express.static(path.join(__dirname, "../client/dist")));
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+app.get(/^(?!\/api).*/, (req, res) => {
+  res.sendFile(path.join(__dirname, "../client/dist/index.html"));
+});
+
+const cerebras = new Cerebras({
+  apiKey: process.env.CEREBRAS_API_KEY,
+});
 
 app.post("/api/summarize", async (req, res) => {
   try {
     const { transcript } = req.body;
 
-    if (!transcript || !Array.isArray(transcript)) {
-      return res.status(400).json({ error: "Invalid transcript format" });
+    if (!Array.isArray(transcript) || transcript.length === 0) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid transcript format",
+      });
     }
 
-    // Format transcript: "Speaker ID: text"
+    // Format transcript
     const formattedTranscript = transcript
       .map((t) => `Speaker ${t.speakerId}: ${t.text}`)
       .join("\n");
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
     const prompt = `
-      You are a meeting assistant. Based on the transcript below, provide a summary in JSON format.
-      Return ONLY the JSON with this structure. Also refer the spreakers not with the id, but person 1 and person 2:
+      You are a meeting assistant.
+
+      Based on the transcript below, return ONLY valid JSON with this structure.
+      Do NOT include markdown or explanations.
+
       {
-        "actions": [{"text": "task string", "speakerId": "id"}],
-        "decisions": [{"text": "decision string", "speakerId": "id"}],
+        "actions": [{"text": "task string", "speakerId": "person 1"}],
+        "decisions": [{"text": "decision string", "speakerId": "person 2"}],
         "summary": "one paragraph overview"
       }
-      
+
+      Rules:
+      - Refer to speakers as "person 1", "person 2", etc (not raw IDs)
+      - Be concise and accurate
+
       Transcript:
       ${formattedTranscript}
-    `;
+      `;
 
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
+    const completion = await cerebras.chat.completions.create({
+      model: "llama-3.3-70b",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 2000,
+    });
 
-    // Clean up potential markdown code blocks from AI response
-    const cleanJson = responseText.replace(/```json|```/g, "").trim();
+    const responseText = completion.choices[0].message.content.trim();
+
     let parsed;
     try {
-      parsed = JSON.parse(cleanJson);
-    } catch (e) {
-      console.error("Invalid JSON from Gemini:", cleanJson);
-      return res.status(500).json({ error: "AI returned invalid JSON" });
+      parsed = JSON.parse(responseText);
+    } catch (err) {
+      console.error("Invalid JSON from Cerebras:", responseText);
+      return res.status(500).json({
+        error: true,
+        message: "AI returned invalid JSON",
+      });
     }
 
     res.json(parsed);
   } catch (error) {
-    console.error("Gemini Error:", error);
-    res.status(500).json({ error: "Failed to process transcript" });
+    console.error("Cerebras Error:", error);
+    res.status(500).json({
+      error: true,
+      message: "Failed to process transcript",
+    });
   }
 });
 
