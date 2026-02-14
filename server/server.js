@@ -47,7 +47,7 @@ app.post("/api/summarize", async (req, res) => {
 
     const prompt = `
       You are a meeting assistant. Based on the transcript below, provide a summary in JSON format.
-      Return ONLY the JSON with this structure:
+      Return ONLY the JSON with this structure. Also refer the spreakers not with the id, but person 1 and person 2:
       {
         "actions": [{"text": "task string", "speakerId": "id"}],
         "decisions": [{"text": "decision string", "speakerId": "id"}],

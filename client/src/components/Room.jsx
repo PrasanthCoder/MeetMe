@@ -2,6 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams, useNavigate } from "react-router-dom";
 import Peer from "peerjs";
 import io from "socket.io-client";
+import {
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  MonitorUp,
+  FileText,
+  Sparkles,
+  PhoneOff,
+  XCircle,
+} from "lucide-react";
 
 const socket = io("/", {
   // Use relative URL to use Vite proxy
@@ -377,7 +388,43 @@ function Room() {
         )}
       </div>
 
-      {/* 🎛 Controls */}
+      {meetingNotes && (
+        <div className="mt-6 bg-gray-800 p-4 rounded text-white max-w-3xl">
+          <h3 className="text-xl mb-2">📝 AI-Assisted Meeting Notes</h3>
+
+          <h4 className="font-semibold">Action Items</h4>
+          <ul className="list-disc ml-6">
+            {meetingNotes.actions.map((a, i) => (
+              <li key={i}>
+                [{a.speakerId}] {a.text}
+                <span className="text-sm text-gray-400 ml-2">
+                  ({a.confidence})
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          <h4 className="font-semibold mt-4">Decisions</h4>
+          <ul className="list-disc ml-6">
+            {meetingNotes.decisions.map((d, i) => (
+              <li key={i}>
+                [{d.speakerId}] {d.text}
+              </li>
+            ))}
+          </ul>
+
+          <h4 className="font-semibold mt-4"></h4>
+
+          {meetingNotes.summary && (
+            <div className="mb-4 italic text-gray-300">
+              <h4 className="font-semibold text-white">Summary:</h4>
+              {meetingNotes.summary}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 🎛 Controls 
       <div className="flex gap-4">
         <button
           onClick={toggleMute}
@@ -436,42 +483,117 @@ function Room() {
           Leave Call
         </button>
       </div>
+      */}
 
-      {meetingNotes && (
-        <div className="mt-6 bg-gray-800 p-4 rounded text-white max-w-3xl">
-          <h3 className="text-xl mb-2">📝 AI-Assisted Meeting Notes</h3>
+      <div className="fixed bottom-0 left-0 right-0 flex justify-center p-6 z-[100] pointer-events-none">
+        <div className="pointer-events-auto flex flex-row items-center gap-2 md:gap-4 bg-gray-900/90 backdrop-blur-xl p-3 md:p-4 rounded-3xl border border-white/10 shadow-2xl transition-all">
+          {/* Mute Button */}
+          <div className="relative group">
+            <button
+              onClick={toggleMute}
+              className={`p-3 md:p-4 rounded-2xl transition-all duration-200 ${
+                isMuted
+                  ? "bg-red-500/20 text-red-500 hover:bg-red-500/30"
+                  : "bg-white/10 text-white hover:bg-white/20"
+              }`}
+            >
+              {isMuted ? <MicOff size={22} /> : <Mic size={22} />}
+            </button>
+            <span className="absolute -top-10 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 transition-all bg-black text-white text-[10px] md:text-xs py-1 px-2 rounded">
+              {isMuted ? "Unmute" : "Mute"}
+            </span>
+          </div>
 
-          <h4 className="font-semibold">Action Items</h4>
-          <ul className="list-disc ml-6">
-            {meetingNotes.actions.map((a, i) => (
-              <li key={i}>
-                [{a.speakerId}] {a.text}
-                <span className="text-sm text-gray-400 ml-2">
-                  ({a.confidence})
-                </span>
-              </li>
-            ))}
-          </ul>
+          {/* Video Button */}
+          <div className="relative group">
+            <button
+              onClick={toggleVideo}
+              className={`p-3 md:p-4 rounded-2xl transition-all duration-200 ${
+                isVideoOff
+                  ? "bg-red-500/20 text-red-500 hover:bg-red-500/30"
+                  : "bg-white/10 text-white hover:bg-white/20"
+              }`}
+            >
+              {isVideoOff ? <VideoOff size={22} /> : <Video size={22} />}
+            </button>
+            <span className="absolute -top-10 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 transition-all bg-black text-white text-[10px] md:text-xs py-1 px-2 rounded whitespace-nowrap">
+              Camera
+            </span>
+          </div>
 
-          <h4 className="font-semibold mt-4">Decisions</h4>
-          <ul className="list-disc ml-6">
-            {meetingNotes.decisions.map((d, i) => (
-              <li key={i}>
-                [{d.speakerId}] {d.text}
-              </li>
-            ))}
-          </ul>
+          {/* Screen Share - Your working logic */}
+          <div className="relative group">
+            <button
+              onClick={
+                isScreenSharing && !isSomeoneElseSharing
+                  ? stopScreenShare
+                  : startScreenShare
+              }
+              disabled={isSomeoneElseSharing}
+              className={`p-3 md:p-4 rounded-2xl transition-all duration-200 ${
+                isSomeoneElseSharing
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed opacity-50"
+                  : isScreenSharing
+                    ? "bg-blue-500/20 text-blue-400 hover:bg-blue-500/40"
+                    : "bg-white/10 text-white hover:bg-white/20"
+              }`}
+            >
+              {isScreenSharing && !isSomeoneElseSharing ? (
+                <XCircle size={22} />
+              ) : (
+                <MonitorUp size={22} />
+              )}
+            </button>
+            <span className="absolute -top-10 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 transition-all bg-black text-white text-[10px] md:text-xs py-1 px-2 rounded whitespace-nowrap">
+              {isSomeoneElseSharing
+                ? "Sharing Locked"
+                : isScreenSharing
+                  ? "Stop Share"
+                  : "Share Screen"}
+            </span>
+          </div>
 
-          <h4 className="font-semibold mt-4"></h4>
+          {/* Notes Button */}
+          <div className="relative group">
+            <button
+              onClick={isRecording ? stopTranscription : startTranscription}
+              className={`p-3 md:p-4 rounded-2xl transition-all duration-200 ${
+                isRecording
+                  ? "bg-yellow-500/20 text-yellow-500 hover:bg-yellow-500/30"
+                  : "bg-white/10 text-white hover:bg-white/20"
+              }`}
+            >
+              <FileText size={22} />
+            </button>
+            <span className="absolute -top-10 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 transition-all bg-black text-white text-[10px] md:text-xs py-1 px-2 rounded">
+              Notes
+            </span>
+          </div>
 
-          {meetingNotes.summary && (
-            <div className="mb-4 italic text-gray-300">
-              <h4 className="font-semibold text-white">Summary:</h4>
-              {meetingNotes.summary}
-            </div>
-          )}
+          {/* Summary Button */}
+          <div className="relative group">
+            <button
+              onClick={generateNotes}
+              className="p-3 md:p-4 rounded-2xl bg-purple-500/20 text-purple-400 hover:bg-purple-500/40 transition-all"
+            >
+              <Sparkles size={22} />
+            </button>
+            <span className="absolute -top-10 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 transition-all bg-black text-white text-[10px] md:text-xs py-1 px-2 rounded">
+              Summary
+            </span>
+          </div>
+
+          <div className="w-[1px] h-8 bg-white/10 mx-1" />
+
+          {/* Leave Button */}
+          <button
+            onClick={leaveCall}
+            className="p-3 md:p-4 rounded-2xl bg-red-600 text-white hover:bg-red-500 transition-all shadow-lg shadow-red-900/40"
+          >
+            <PhoneOff size={22} />
+          </button>
         </div>
-      )}
+      </div>
     </div>
   );
 }
