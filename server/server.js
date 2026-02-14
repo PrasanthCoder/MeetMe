@@ -1,7 +1,6 @@
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { v4 as uuidV4 } from "uuid";
 import Cerebras from "@cerebras/cerebras_cloud_sdk";
 import "dotenv/config";
 import path from "path";
@@ -16,16 +15,17 @@ const io = new Server(server);
 
 // Middleware to parse JSON bodies
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "../client/dist")));
+app.use(express.static(path.join(__dirname, "public")));
 
 app.get(/^(?!\/api).*/, (req, res) => {
-  res.sendFile(path.join(__dirname, "../client/dist/index.html"));
+  res.sendFile(path.join(__dirname, "public/index.html"));
 });
 
 const cerebras = new Cerebras({
   apiKey: process.env.CEREBRAS_API_KEY,
 });
 
+//cerebras api call to llama LLM for meeting notes
 app.post("/api/summarize", async (req, res) => {
   try {
     const { transcript } = req.body;
@@ -37,7 +37,6 @@ app.post("/api/summarize", async (req, res) => {
       });
     }
 
-    // Format transcript
     const formattedTranscript = transcript
       .map((t) => `Speaker ${t.speakerId}: ${t.text}`)
       .join("\n");
@@ -97,11 +96,10 @@ app.post("/api/summarize", async (req, res) => {
 
 const rooms = new Map(); // roomId -> { host: userId, users: [userId1, userId2] }
 
-// Socket.io signaling
+//socket.io
 io.on("connection", (socket) => {
   socket.on("join-room", (roomId, userId, isHost) => {
     if (isHost) {
-      console.log("host is going in");
       rooms.set(roomId, {
         host: userId,
         users: [userId],
@@ -109,20 +107,16 @@ io.on("connection", (socket) => {
 
       socket.join(roomId);
     } else {
-      console.log("going in");
       if (rooms.has(roomId)) {
         const room = rooms.get(roomId);
         room.users.push(userId);
         socket.join(roomId);
-        console.log("user-joined");
         socket.to(roomId).emit("user-connected", userId);
       } else {
         socket.emit("room-not-found");
         return;
       }
     }
-
-    console.log("room: ", rooms.get(roomId));
 
     socket.on("offer", (offer, targetId) => {
       socket.to(roomId).emit("offer", offer, userId);
@@ -141,32 +135,29 @@ io.on("connection", (socket) => {
       if (!room) return;
 
       room.users = room.users.filter((u) => u !== userId);
-      console.log("coming to handle user leave");
-      // If host left, assign new host
+
       if (room.host === userId) {
-        console.log("oldhost: ", userId);
         if (room.users.length > 0) {
-          room.host = room.users[0]; // promote next user
-          console.log("new host: ", room.host);
+          room.host = room.users[0]; // next user to be host
           socket.to(roomId).emit("host-changed", room.host);
         } else {
-          rooms.delete(roomId); // no users left
+          rooms.delete(roomId); // delete room when no users left
         }
       }
     };
+
     // for leave room button
     socket.on("leave-room", (roomId, userId, isHost) => {
-      console.log("you are leaving room, ", userId);
+      console.log("user leaving, ", userId);
     });
 
     //when page refresh or socket disconnect
     socket.on("disconnect", () => {
-      console.log("you came to disconnect");
       socket.to(roomId).emit("user-disconnected", userId);
       handleUserLeave(roomId, userId);
-      console.log("room: ", rooms.get(roomId));
     });
 
+    //to sent transcript from one user to other
     socket.on("transcript-chunk", (roomId, chunk) => {
       console.log(chunk);
       socket.to(roomId).emit("transcript-chunk", chunk);

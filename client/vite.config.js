@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "url";
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -12,5 +13,9 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  build: {
+    outDir: fileURLToPath(new URL("../server/public", import.meta.url)),
+    emptyOutDir: true,
   },
 });
