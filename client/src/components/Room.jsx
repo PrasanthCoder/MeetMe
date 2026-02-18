@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 
 const socket = io("/", {
-  // Use relative URL to use Vite proxy
   reconnection: true,
   reconnectionAttempts: 5,
 });
@@ -34,17 +33,21 @@ function Room() {
 
   const [copied, setCopied] = useState(false);
 
+  //screen share refs
   const screenCallRef = useRef(null);
   const screenStreamRef = useRef(null); // Local screen stream
   const remoteScreenStreamRef = useRef(null); // Remote screen stream
 
+  //video and screen related
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isSomeoneElseSharing, setIsSomeoneElseSharing] = useState(false);
   const [isScreenExpanded, setIsScreenExpanded] = useState(false);
+  const [isScreenAudioMuted, setIsScreenAudioMuted] = useState(false);
+  const isLocalScreenSharer = isScreenSharing && !isSomeoneElseSharing;
 
-  // 🎙 Distributed transcription
+  //transcription related
   const recognitionRef = useRef(null);
   const transcriptLogRef = useRef([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -57,14 +60,14 @@ function Room() {
 
   useEffect(() => {
     if (!socket.connected) {
-      socket.connect(); // 👈 reconnect
+      socket.connect();
     }
     if (hasRendered.current) return;
     let currentPeer;
 
     const init = async () => {
       try {
-        //Ask for permissions FIRST
+        //media permission
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
@@ -91,6 +94,15 @@ function Room() {
 
             call.on("stream", (remoteStream) => {
               remoteScreenStreamRef.current = remoteStream;
+              const audioTracks = remoteStream.getAudioTracks();
+              console.log("Screen audio tracks:", audioTracks.length);
+
+              if (ScreenRef.current) {
+                ScreenRef.current.srcObject = remoteStream;
+                ScreenRef.current.muted = false; // 🔴 important
+                ScreenRef.current.autoplay = true;
+                ScreenRef.current.playsInline = true;
+              }
               setIsScreenSharing(true);
               setIsSomeoneElseSharing(true);
             });
@@ -100,6 +112,11 @@ function Room() {
               setIsScreenSharing(false);
               setIsSomeoneElseSharing(false);
               setIsScreenExpanded(false);
+              setIsScreenAudioMuted(false);
+              if (ScreenRef.current) {
+                ScreenRef.current.muted = false;
+                ScreenRef.current.srcObject = null;
+              }
             });
           } else {
             call.answer(streamRef.current);
@@ -139,6 +156,7 @@ function Room() {
           }
         });
 
+        //transcript from other user
         socket.on("transcript-chunk", (chunk) => {
           transcriptLogRef.current.push(chunk);
         });
@@ -250,15 +268,26 @@ function Room() {
     setIsVideoOff(!isVideoOff);
   };
 
-  //Start screen share (SECOND CALL)
+  //Start screen share(second call)
   const startScreenShare = async () => {
     if (isSomeoneElseSharing) return;
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          sampleRate: 44100,
+        },
       });
 
       screenStreamRef.current = screenStream;
+
+      if (ScreenRef.current) {
+        ScreenRef.current.srcObject = screenStream;
+        ScreenRef.current.autoplay = true;
+        ScreenRef.current.playsInline = true;
+      }
 
       socket.emit("request-screen-share", roomId, peerRef.current.id);
 
@@ -288,10 +317,23 @@ function Room() {
 
     if (ScreenRef.current) {
       ScreenRef.current.srcObject = null;
+      ScreenRef.current.muted = false;
+      ScreenRef.current.srcObject = null;
     }
 
+    setIsScreenAudioMuted(false);
     setIsScreenSharing(false);
     setIsScreenExpanded(false);
+  };
+
+  //screen share audio
+  const toggleScreenAudio = () => {
+    if (!ScreenRef.current) return;
+
+    const videoEl = ScreenRef.current;
+    videoEl.muted = !videoEl.muted;
+
+    setIsScreenAudioMuted(videoEl.muted);
   };
 
   const leaveCall = () => {
@@ -363,7 +405,7 @@ function Room() {
     if (transcriptLogRef.current.length === 0)
       return alert("No transcript available.");
 
-    setIsRecording(false); // Stop recording
+    setIsRecording(false);
     setNotesError(null);
     setIsGeneratingNotes(true);
 
@@ -458,11 +500,23 @@ function Room() {
             {isScreenExpanded ? "✕" : "⛶"}
           </button>
 
+          {!isLocalScreenSharer && (
+            <button
+              onClick={toggleScreenAudio}
+              className="absolute top-4 right-14 z-[95] bg-black/60 text-white p-2 rounded-lg"
+              title={
+                isScreenAudioMuted ? "Unmute screen audio" : "Mute screen audio"
+              }
+            >
+              {isScreenAudioMuted ? "🔇" : "🔊"}
+            </button>
+          )}
+
           <video
             ref={ScreenRef}
             autoPlay
-            muted
             playsInline
+            muted={isLocalScreenSharer}
             onDoubleClick={() => setIsScreenExpanded((v) => !v)}
             className={`bg-black transition-all duration-300 ${
               isScreenExpanded
