@@ -11,7 +11,25 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  transports: ["websocket"],
+  pingInterval: 10000,
+  pingTimeout: 5000,
+});
+
+// Prevent caching of index.html
+app.use((req, res, next) => {
+  if (req.path === "/" || req.path.endsWith(".html")) {
+    res.setHeader(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate, proxy-revalidate",
+    );
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
+  }
+  next();
+});
 
 // Middleware to parse JSON bodies
 app.use(express.json());
@@ -128,6 +146,12 @@ io.on("connection", (socket) => {
 
     socket.on("ice-candidate", (candidate, targetId) => {
       socket.to(roomId).emit("ice-candidate", candidate, userId);
+    });
+
+    io.on("connection", (socket) => {
+      socket.on("ping-keepalive", () => {
+        // keep connection alive
+      });
     });
 
     const handleUserLeave = (roomId, userId) => {

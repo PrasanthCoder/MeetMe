@@ -14,9 +14,11 @@ import {
   XCircle,
 } from "lucide-react";
 
-const socket = io("/", {
+const socket = io({
+  transports: ["websocket"],
   reconnection: true,
-  reconnectionAttempts: 5,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
 });
 
 function Room() {
@@ -77,9 +79,37 @@ function Room() {
         localVideoRef.current.srcObject = stream;
 
         //Create Peer only after stream exists
-        currentPeer = new Peer();
-        peerRef.current = currentPeer;
+        currentPeer = new Peer(undefined, {
+          config: {
+            iceServers: [
+              {
+                urls: "stun:stun.relay.metered.ca:80",
+              },
+              {
+                urls: "turn:standard.relay.metered.ca:80",
+                username: "3254082a476a7fda8c59005c",
+                credential: "yi1VQWa5L/RpCnB0",
+              },
+              {
+                urls: "turn:standard.relay.metered.ca:80?transport=tcp",
+                username: "3254082a476a7fda8c59005c",
+                credential: "yi1VQWa5L/RpCnB0",
+              },
+              {
+                urls: "turn:standard.relay.metered.ca:443",
+                username: "3254082a476a7fda8c59005c",
+                credential: "yi1VQWa5L/RpCnB0",
+              },
+              {
+                urls: "turns:standard.relay.metered.ca:443?transport=tcp",
+                username: "3254082a476a7fda8c59005c",
+                credential: "yi1VQWa5L/RpCnB0",
+              },
+            ],
+          },
+        });
 
+        peerRef.current = currentPeer;
         //When peer is ready, join room
         currentPeer.on("open", (id) => {
           socket.emit("join-room", roomId, id, isHostRef.current);
@@ -99,7 +129,7 @@ function Room() {
 
               if (ScreenRef.current) {
                 ScreenRef.current.srcObject = remoteStream;
-                ScreenRef.current.muted = false; // 🔴 important
+                ScreenRef.current.muted = false;
                 ScreenRef.current.autoplay = true;
                 ScreenRef.current.playsInline = true;
               }
@@ -147,6 +177,16 @@ function Room() {
           setIsSomeoneElseSharing(false);
           setIsScreenExpanded(false);
           alert("User " + userId + " has left the call");
+        });
+
+        socket.on("disconnect", (reason) => {
+          console.warn("Socket disconnected:", reason);
+        });
+
+        socket.on("reconnect", () => {
+          console.log("Socket reconnected");
+          // rejoin room
+          socket.emit("join-room", roomId, peerRef.current.id);
         });
 
         socket.on("host-changed", (newHostId) => {
@@ -197,6 +237,10 @@ function Room() {
     };
     window.addEventListener("keydown", Screenhandler);
 
+    const interval = setInterval(() => {
+      socket.emit("ping-keepalive");
+    }, 5000);
+
     hasRendered.current = true;
 
     return () => {
@@ -206,7 +250,7 @@ function Room() {
       socket.off("transcript-chunk");
 
       currentPeer?.destroy();
-
+      clearInterval(interval);
       streamRef.current?.getTracks().forEach((track) => track.stop());
       screenStreamRef.current?.getTracks().forEach((track) => track.stop());
       window.removeEventListener("keydown", Screenhandler);
