@@ -80,7 +80,7 @@ app.post("/api/summarize", async (req, res) => {
       `;
 
     const completion = await cerebras.chat.completions.create({
-      model: "llama-3.3-70b",
+      model: "gpt-oss-120b",
       messages: [
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: prompt },
@@ -90,7 +90,6 @@ app.post("/api/summarize", async (req, res) => {
     });
 
     const responseText = completion.choices[0].message.content.trim();
-
     let parsed;
     try {
       parsed = JSON.parse(responseText);
@@ -127,6 +126,10 @@ io.on("connection", (socket) => {
     } else {
       if (rooms.has(roomId)) {
         const room = rooms.get(roomId);
+        if (room.users.length >= 2) {
+          socket.emit("room-full");
+          return;
+        }
         room.users.push(userId);
         socket.join(roomId);
         socket.to(roomId).emit("user-connected", userId);
@@ -148,10 +151,8 @@ io.on("connection", (socket) => {
       socket.to(roomId).emit("ice-candidate", candidate, userId);
     });
 
-    io.on("connection", (socket) => {
-      socket.on("ping-keepalive", () => {
-        // keep connection alive
-      });
+    socket.on("ping-keepalive", () => {
+      // keep connection alive
     });
 
     const handleUserLeave = (roomId, userId) => {
@@ -159,7 +160,6 @@ io.on("connection", (socket) => {
       if (!room) return;
 
       room.users = room.users.filter((u) => u !== userId);
-
       if (room.host === userId) {
         if (room.users.length > 0) {
           room.host = room.users[0]; // next user to be host
@@ -177,14 +177,17 @@ io.on("connection", (socket) => {
 
     //when page refresh or socket disconnect
     socket.on("disconnect", () => {
-      socket.to(roomId).emit("user-disconnected", userId);
+      socket.to(roomId).emit("user-disconnected");
       handleUserLeave(roomId, userId);
     });
 
     //to sent transcript from one user to other
     socket.on("transcript-chunk", (roomId, chunk) => {
-      console.log(chunk);
       socket.to(roomId).emit("transcript-chunk", chunk);
+    });
+
+    socket.on("camera-state", ({ roomId, enabled }) => {
+      socket.to(roomId).emit("camera-state", { enabled });
     });
   });
 });
