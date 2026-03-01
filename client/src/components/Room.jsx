@@ -24,32 +24,33 @@ const socket = io({
 function Room() {
   const { roomId } = useParams();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+
   const isHostRef = useRef(searchParams.get("host") === "true");
-  const streamRef = useRef(null);
+
+  const peerRef = useRef(null);
+  const callRef = useRef(null);
+
+  const cameraStreamRef = useRef(null);
+  const activeStreamRef = useRef(null);
+
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const ScreenRef = useRef(null);
-  const cameraCallRef = useRef(null);
-  const navigate = useNavigate();
-  const peerRef = useRef(null);
 
+  // UI state
   const [copied, setCopied] = useState(false);
-
-  //screen share refs
-  const screenCallRef = useRef(null);
-  const screenStreamRef = useRef(null); // Local screen stream
-  const remoteScreenStreamRef = useRef(null); // Remote screen stream
-
-  //video and screen related
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [isSomeoneElseSharing, setIsSomeoneElseSharing] = useState(false);
-  const [isScreenExpanded, setIsScreenExpanded] = useState(false);
-  const [isScreenAudioMuted, setIsScreenAudioMuted] = useState(false);
-  const isLocalScreenSharer = isScreenSharing && !isSomeoneElseSharing;
+  const [isRemoteExpanded, setIsRemoteExpanded] = useState(false);
+  const [isRemoteMuted, setIsRemoteMuted] = useState(false);
 
-  //transcription related
+  const [hasLocalVideo, setHasLocalVideo] = useState(false);
+  const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+
+  const screenStreamRef = useRef(null);
+
+  // transcription / notes
   const recognitionRef = useRef(null);
   const transcriptLogRef = useRef([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -58,28 +59,29 @@ function Room() {
   const [isGeneratingNotes, setIsGeneratingNotes] = useState(false);
   const [notesError, setNotesError] = useState(null);
 
-  const hasRendered = useRef(false);
-
   useEffect(() => {
     if (!socket.connected) {
       socket.connect();
     }
-    if (hasRendered.current) return;
-    let currentPeer;
+    let peer;
 
     const init = async () => {
       try {
-        //media permission
-        const stream = await navigator.mediaDevices.getUserMedia({
+        const cameraStream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
         });
 
-        streamRef.current = stream;
-        localVideoRef.current.srcObject = stream;
+        const videoTrack = cameraStream.getVideoTracks()[0];
+        setHasLocalVideo(videoTrack && videoTrack.readyState === "live");
 
-        //Create Peer only after stream exists
-        currentPeer = new Peer(undefined, {
+        videoTrack.onended = () => setHasLocalVideo(false);
+
+        cameraStreamRef.current = cameraStream;
+        activeStreamRef.current = cameraStream;
+        localVideoRef.current.srcObject = cameraStream;
+
+        peer = new Peer(undefined, {
           config: {
             iceServers: [
               {
@@ -109,84 +111,39 @@ function Room() {
           },
         });
 
-        peerRef.current = currentPeer;
-        //When peer is ready, join room
-        currentPeer.on("open", (id) => {
+        peerRef.current = peer;
+
+        peer.on("open", (id) => {
           socket.emit("join-room", roomId, id, isHostRef.current);
         });
 
-        //Answer incoming calls with stream
-        currentPeer.on("call", (call) => {
-          const isScreen = call.metadata?.type === "screen";
-          if (isScreen) {
-            call.answer();
-            screenCallRef.current = call;
+        peer.on("call", (call) => {
+          call.answer(activeStreamRef.current);
+          callRef.current = call;
 
-            call.on("stream", (remoteStream) => {
-              remoteScreenStreamRef.current = remoteStream;
-              const audioTracks = remoteStream.getAudioTracks();
-              console.log("Screen audio tracks:", audioTracks.length);
+          call.on("stream", (remoteStream) => {
+            remoteVideoRef.current.srcObject = remoteStream;
+            const remoteVideoTrack = remoteStream.getVideoTracks()[0];
+            setHasRemoteVideo(
+              !!remoteVideoTrack && remoteVideoTrack.readyState === "live",
+            );
 
-              if (ScreenRef.current) {
-                ScreenRef.current.srcObject = remoteStream;
-                ScreenRef.current.muted = false;
-                ScreenRef.current.autoplay = true;
-                ScreenRef.current.playsInline = true;
-              }
-              setIsScreenSharing(true);
-              setIsSomeoneElseSharing(true);
-            });
-
-            call.on("close", () => {
-              remoteScreenStreamRef.current = null;
-              setIsScreenSharing(false);
-              setIsSomeoneElseSharing(false);
-              setIsScreenExpanded(false);
-              setIsScreenAudioMuted(false);
-              if (ScreenRef.current) {
-                ScreenRef.current.muted = false;
-                ScreenRef.current.srcObject = null;
-              }
-            });
-          } else {
-            call.answer(streamRef.current);
-            cameraCallRef.current = call;
-
-            call.on("stream", (remoteStream) => {
-              remoteVideoRef.current.srcObject = remoteStream;
-            });
-          }
+            if (remoteVideoTrack) {
+              remoteVideoTrack.onended = () => setHasRemoteVideo(false);
+            }
+          });
         });
 
-        //Host calls newly connected users
         socket.on("user-connected", (userId) => {
-          if (isHostRef.current && streamRef.current) {
-            const call = currentPeer.call(userId, streamRef.current, {
-              metadata: { type: "camera" },
-            });
-            cameraCallRef.current = call;
-            call.on("stream", (remoteStream) => {
-              remoteVideoRef.current.srcObject = remoteStream;
-            });
+          if (isHostRef.current) {
+            startCall(userId, activeStreamRef.current);
           }
         });
 
-        socket.on("user-disconnected", (userId) => {
+        socket.on("user-disconnected", () => {
+          alert("The other user has left the meeting");
           remoteVideoRef.current.srcObject = null;
-          setIsScreenSharing(false);
-          setIsSomeoneElseSharing(false);
-          setIsScreenExpanded(false);
-          alert("User " + userId + " has left the call");
-        });
-
-        socket.on("disconnect", (reason) => {
-          console.warn("Socket disconnected:", reason);
-        });
-
-        socket.on("reconnect", () => {
-          console.log("Socket reconnected");
-          // rejoin room
-          socket.emit("join-room", roomId, peerRef.current.id);
+          setIsRemoteExpanded(false);
         });
 
         socket.on("host-changed", (newHostId) => {
@@ -196,242 +153,216 @@ function Room() {
           }
         });
 
-        //transcript from other user
+        socket.on("room-full", () => {
+          alert("Room already has 2 participants");
+          navigate("/");
+        });
+
+        socket.on("camera-state", ({ enabled }) => {
+          setHasRemoteVideo(enabled);
+        });
+
         socket.on("transcript-chunk", (chunk) => {
           transcriptLogRef.current.push(chunk);
         });
 
-        //future-maintenane if needed
-        socket.on("screen-share-started", (sharerId) => {
-          if (peerRef.current?.id !== sharerId) {
-            setIsSomeoneElseSharing(true);
-          }
-        });
-
-        //future-maintenane if needed
-        socket.on("screen-share-stopped", () => {
-          setIsSomeoneElseSharing(false);
-          setIsScreenExpanded(false);
-          setIsScreenSharing(false); // Clean up remote view
-        });
-
-        socket.on("screen-share-denied", (message) => {
-          alert(message);
-        });
-
         socket.on("room-not-found", () => {
-          alert("Room does not exist");
+          alert("Room not found");
           navigate("/");
         });
       } catch (err) {
-        console.error("Permission error:", err);
-        alert("Camera & microphone permissions are required");
+        alert("Camera & microphone permission required: ", err);
         navigate("/");
       }
     };
 
     init();
 
-    const Screenhandler = (e) => {
-      if (e.key === "Escape") setIsScreenExpanded(false);
+    const escHandler = (e) => {
+      if (e.key === "Escape") setIsRemoteExpanded(false);
     };
-    window.addEventListener("keydown", Screenhandler);
-
-    const interval = setInterval(() => {
-      socket.emit("ping-keepalive");
-    }, 5000);
-
-    hasRendered.current = true;
+    window.addEventListener("keydown", escHandler);
 
     return () => {
       socket.off("user-connected");
       socket.off("user-disconnected");
       socket.off("room-not-found");
       socket.off("transcript-chunk");
+      socket.off("host-changed");
+      socket.off("room-full");
 
-      currentPeer?.destroy();
-      clearInterval(interval);
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      screenStreamRef.current?.getTracks().forEach((track) => track.stop());
-      window.removeEventListener("keydown", Screenhandler);
+      peer?.destroy();
+      cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
+      activeStreamRef.current?.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+      window.removeEventListener("keydown", escHandler);
+      socket.disconnect();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (isScreenSharing && ScreenRef.current && screenStreamRef.current) {
-      ScreenRef.current.srcObject = screenStreamRef.current;
-    }
-    if (!isScreenSharing && ScreenRef.current) {
-      ScreenRef.current.srcObject = null;
-    }
-    if (isScreenSharing && ScreenRef.current && remoteScreenStreamRef.current) {
-      ScreenRef.current.srcObject = remoteScreenStreamRef.current;
-    }
-  }, [isScreenSharing]);
-
-  useEffect(() => {
-    if (isScreenExpanded) {
+    if (isRemoteExpanded) {
       document.body.style.overflow = "hidden";
     } else {
       document.body.style.overflow = "";
     }
+    return () => (document.body.style.overflow = "");
+  }, [isRemoteExpanded]);
 
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [isScreenExpanded]);
+  /* -------------------------------------------------- */
+  /* CALL HELPER */
+  /* -------------------------------------------------- */
+  const startCall = (userId, stream) => {
+    callRef.current?.close();
+    const call = peerRef.current.call(userId, stream);
+    callRef.current = call;
 
-  useEffect(() => {
-    if (meetingNotes) {
-      setNotesCollapsed(true);
-    }
-  }, [meetingNotes]);
-
-  //Mute / Unmute
-  const toggleMute = () => {
-    const audioTracks = streamRef.current?.getAudioTracks();
-    if (!audioTracks || audioTracks.length === 0) return;
-
-    audioTracks.forEach((track) => {
-      track.enabled = isMuted;
-    });
-
-    setIsMuted(!isMuted);
-  };
-
-  //Video ON / OFF
-  const toggleVideo = () => {
-    const videoTracks = streamRef.current?.getVideoTracks();
-    if (!videoTracks || videoTracks.length === 0) return;
-
-    videoTracks.forEach((track) => {
-      track.enabled = isVideoOff;
-    });
-
-    setIsVideoOff(!isVideoOff);
-  };
-
-  //Start screen share(second call)
-  const startScreenShare = async () => {
-    if (isSomeoneElseSharing) return;
-    try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          sampleRate: 44100,
-        },
-      });
-
-      screenStreamRef.current = screenStream;
-
-      if (ScreenRef.current) {
-        ScreenRef.current.srcObject = screenStream;
-        ScreenRef.current.autoplay = true;
-        ScreenRef.current.playsInline = true;
-      }
-
-      socket.emit("request-screen-share", roomId, peerRef.current.id);
-
-      setIsScreenSharing(true);
-
-      const call = peerRef.current.call(
-        cameraCallRef.current.peer,
-        screenStream,
-        { metadata: { type: "screen" } },
+    call.on("stream", (remoteStream) => {
+      remoteVideoRef.current.srcObject = remoteStream;
+      const remoteVideoTrack = remoteStream.getVideoTracks()[0];
+      setHasRemoteVideo(
+        !!remoteVideoTrack && remoteVideoTrack.readyState === "live",
       );
 
-      screenCallRef.current = call;
-
-      screenStream.getVideoTracks()[0].onended = stopScreenShare;
-    } catch (err) {
-      console.error("Screen share error:", err);
-    }
+      if (remoteVideoTrack) {
+        remoteVideoTrack.onended = () => setHasRemoteVideo(false);
+      }
+    });
   };
 
-  const stopScreenShare = () => {
-    socket.emit("stop-screen-share-server", roomId);
-    screenCallRef.current?.close();
-    screenCallRef.current = null;
+  /* -------------------------------------------------- */
+  /* SCREEN SHARE */
+  /* -------------------------------------------------- */
+  const startScreenShare = async () => {
+    const screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true,
+    });
 
+    screenStreamRef.current = screenStream;
+
+    activeStreamRef.current = screenStream;
+    localVideoRef.current.srcObject = screenStream;
+
+    startCall(callRef.current.peer, screenStream);
+    setIsScreenSharing(true);
+    setHasLocalVideo(true);
+    setIsMuted(false);
+    setIsVideoOff(false);
+
+    screenStream.getVideoTracks()[0].onended = stopScreenShare;
+  };
+
+  const stopScreenShare = async () => {
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     screenStreamRef.current = null;
 
-    if (ScreenRef.current) {
-      ScreenRef.current.srcObject = null;
-      ScreenRef.current.muted = false;
-      ScreenRef.current.srcObject = null;
-    }
+    const cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
 
-    setIsScreenAudioMuted(false);
+    cameraStreamRef.current = cameraStream;
+    activeStreamRef.current = cameraStream;
+    localVideoRef.current.srcObject = cameraStream;
+
+    setIsMuted(false);
+    setIsVideoOff(false);
+
+    startCall(callRef.current.peer, cameraStream);
     setIsScreenSharing(false);
-    setIsScreenExpanded(false);
   };
 
-  //screen share audio
-  const toggleScreenAudio = () => {
-    if (!ScreenRef.current) return;
+  /* -------------------------------------------------- */
+  /* CONTROLS */
+  /* -------------------------------------------------- */
+  const toggleMute = () => {
+    cameraStreamRef.current
+      ?.getAudioTracks()
+      .forEach((t) => (t.enabled = isMuted));
+    setIsMuted(!isMuted);
+  };
 
-    const videoEl = ScreenRef.current;
-    videoEl.muted = !videoEl.muted;
+  const toggleVideo = () => {
+    setIsVideoOff((prev) => {
+      const next = !prev;
 
-    setIsScreenAudioMuted(videoEl.muted);
+      cameraStreamRef.current
+        ?.getVideoTracks()
+        .forEach((t) => (t.enabled = !next));
+
+      screenStreamRef.current
+        ?.getVideoTracks()
+        .forEach((t) => (t.enabled = !next));
+
+      setHasLocalVideo(!next);
+      socket.emit("camera-state", {
+        roomId,
+        enabled: !next,
+      });
+
+      return next;
+    });
+  };
+
+  const stopStream = (stream) => {
+    if (!stream) return;
+    stream.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch (e) {
+        console.log("error: ", e);
+      }
+    });
   };
 
   const leaveCall = () => {
-    // Stop media
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    stopStream(screenStreamRef.current);
+    stopStream(cameraStreamRef.current);
+    stopStream(activeStreamRef.current);
 
-    // Notify server
-    socket.emit("leave-room", roomId, peerRef.current?.id, isHostRef.current);
+    screenStreamRef.current = null;
+    cameraStreamRef.current = null;
+    activeStreamRef.current = null;
 
-    // Destroy peer
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    callRef.current?.close();
     peerRef.current?.destroy();
-    hasRendered.current = false;
+    socket.emit("leave-room", roomId, peerRef.current?.id, isHostRef.current);
     socket.disconnect();
-
-    // Navigate out
     navigate("/");
   };
 
+  /* -------------------------------------------------- */
+  /* TRANSCRIPTION */
+  /* -------------------------------------------------- */
   const startTranscription = () => {
     if (isRecording) return;
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      alert("Speech Recognition not supported in this browser");
-      return;
-    }
+    if (!SpeechRecognition) return alert("Speech recognition not supported");
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
-    recognition.interimResults = false;
     recognition.lang = "en-US";
 
     recognition.onresult = (event) => {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i][0].transcript.trim();
-
         const chunk = {
           text,
           timestamp: Date.now(),
           speakerId: peerRef.current.id,
         };
-
-        //store transcript locally
         transcriptLogRef.current.push(chunk);
-        //send transcript to peer
         socket.emit("transcript-chunk", roomId, chunk);
       }
-    };
-
-    recognition.onend = () => {
-      // auto-restart while recording
-      if (isRecording) recognition.start();
     };
 
     recognition.start();
@@ -441,168 +372,152 @@ function Room() {
 
   const stopTranscription = () => {
     recognitionRef.current?.stop();
-    recognitionRef.current = null;
     setIsRecording(false);
   };
 
+  /* -------------------------------------------------- */
+  /* NOTES */
+  /* -------------------------------------------------- */
   const generateNotes = async () => {
-    if (transcriptLogRef.current.length === 0)
-      return alert("No transcript available.");
+    if (!transcriptLogRef.current.length) {
+      return alert("No transcript available");
+    }
 
-    setIsRecording(false);
-    setNotesError(null);
     setIsGeneratingNotes(true);
+    setNotesError(null);
 
     try {
-      const response = await fetch("/api/summarize", {
+      const res = await fetch("/api/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transcript: transcriptLogRef.current }),
       });
 
-      const data = await response.json();
-
-      if (data.error) {
-        setNotesError(data.message || "AI failed");
-        setMeetingNotes(null);
-        return;
-      }
+      const data = await res.json();
+      if (data.error) throw new Error();
 
       setMeetingNotes(data);
-    } catch (err) {
-      console.error("AI Error:", err);
-      setNotesError("Unable to reach AI service");
-      setMeetingNotes(null);
+      setNotesCollapsed(true);
+    } catch {
+      setNotesError("Failed to generate notes");
     } finally {
       setIsGeneratingNotes(false);
     }
   };
 
+  /* -------------------------------------------------- */
+  /* UI */
+  /* -------------------------------------------------- */
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 flex flex-col items-center p-4 pb-32 text-white">
       <div className="absolute inset-0 -z-10 bg-purple-500/5 blur-3xl" />
+
       <div className="mb-6 text-center">
         <h2 className="text-2xl font-semibold mb-2">Meeting Room</h2>
-
         <div className="flex items-center justify-center gap-2 text-xs text-gray-400">
-          <span className="break-all">ID: {roomId}</span>
-
+          <span>ID: {roomId}</span>
           <button
             onClick={() => {
               navigator.clipboard.writeText(roomId);
               setCopied(true);
               setTimeout(() => setCopied(false), 1500);
             }}
-            className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 transition text-gray-300"
+            className="px-2 py-1 rounded bg-white/10 hover:bg-white/20"
           >
             {copied ? "Copied ✓" : "Copy"}
           </button>
         </div>
       </div>
 
-      {/* camera feeds */}
+      {/* Videos */}
       <div className="flex flex-col md:flex-row gap-6 mb-6">
-        <video
-          ref={localVideoRef}
-          autoPlay
-          muted
-          playsInline
-          className="w-80 h-60 bg-black rounded-xl border border-white/10 shadow-lg"
-        />
+        <div className="relative w-80 h-60">
+          <video
+            ref={localVideoRef}
+            autoPlay
+            muted
+            playsInline
+            className="w-full h-full bg-black rounded-xl border border-white/10 shadow-lg"
+          />
 
-        <video
-          ref={remoteVideoRef}
-          autoPlay
-          playsInline
-          className="w-80 h-60 bg-black rounded-xl border border-white/10 shadow-lg"
-        />
-      </div>
+          {!hasLocalVideo && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/70 rounded-xl">
+              <VideoOff size={28} />
+            </div>
+          )}
+        </div>
 
-      {/* screen share feed */}
-      {isScreenSharing && (
         <div
           className={`transition-all duration-300 ${
-            isScreenExpanded
+            isRemoteExpanded
               ? "fixed inset-0 z-[90] bg-black flex items-center justify-center"
               : "relative"
           }`}
-          style={
-            isScreenExpanded
-              ? {
-                  width: "100dvw",
-                  height: "100dvh",
-                  paddingBottom: "env(safe-area-inset-bottom)",
-                  paddingTop: "env(safe-area-inset-top)",
-                }
-              : undefined
-          }
         >
+          {/* Expand / Collapse */}
           <button
-            onClick={() => setIsScreenExpanded((v) => !v)}
+            onClick={() => setIsRemoteExpanded((v) => !v)}
             className="absolute top-4 right-4 z-[95] bg-black/60 text-white p-2 rounded-lg"
           >
-            {isScreenExpanded ? "✕" : "⛶"}
+            {isRemoteExpanded ? "✕" : "⛶"}
           </button>
 
-          {!isLocalScreenSharer && (
-            <button
-              onClick={toggleScreenAudio}
-              className="absolute top-4 right-14 z-[95] bg-black/60 text-white p-2 rounded-lg"
-              title={
-                isScreenAudioMuted ? "Unmute screen audio" : "Mute screen audio"
-              }
-            >
-              {isScreenAudioMuted ? "🔇" : "🔊"}
-            </button>
-          )}
+          {/* Remote Audio Mute */}
+          <button
+            onClick={() => {
+              if (!remoteVideoRef.current) return;
+              remoteVideoRef.current.muted = !remoteVideoRef.current.muted;
+              setIsRemoteMuted((v) => !v);
+            }}
+            className="absolute top-4 right-14 z-[95] bg-black/60 text-white p-2 rounded-lg"
+          >
+            {isRemoteMuted ? "🔇" : "🔊"}
+          </button>
 
           <video
-            ref={ScreenRef}
+            ref={remoteVideoRef}
             autoPlay
             playsInline
-            muted={isLocalScreenSharer}
-            onDoubleClick={() => setIsScreenExpanded((v) => !v)}
+            onDoubleClick={() => setIsRemoteExpanded((v) => !v)}
             className={`bg-black transition-all duration-300 ${
-              isScreenExpanded
+              isRemoteExpanded
                 ? "w-full h-full object-contain"
                 : "w-80 h-60 rounded-xl border border-white/10 shadow-lg"
             }`}
           />
-        </div>
-      )}
 
-      {/* notes loaded */}
+          {!hasRemoteVideo && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 rounded-xl text-gray-300">
+              <VideoOff size={32} />
+              <span className="text-sm mt-2">Camera Off</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Notes loading */}
       {isGeneratingNotes && (
-        <div className="mt-8 bg-gray-900/80 backdrop-blur border border-white/10 rounded-2xl p-5 text-white max-w-3xl w-full shadow-xl flex items-center gap-3">
-          <div className="w-5 h-5 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm text-gray-300">
-            Generating AI meeting notes… please wait
-          </span>
+        <div className="mt-6 text-sm text-gray-300">
+          Generating AI meeting notes…
         </div>
       )}
 
-      {/* Notes generated by LLM - collapsable */}
+      {/* Notes */}
       {meetingNotes && (
-        <div className="mt-8 bg-gray-900/80 backdrop-blur border border-white/10 rounded-2xl text-white max-w-3xl w-full shadow-xl">
-          {/* Header */}
+        <div className="mt-6 bg-gray-900/80 backdrop-blur border border-white/10 rounded-2xl max-w-3xl w-full shadow-xl">
           <button
             onClick={() => setNotesCollapsed((v) => !v)}
-            className="w-full flex items-center justify-between p-5 text-left"
+            className="w-full flex items-center justify-between p-5"
           >
-            <h3 className="text-lg font-semibold">
-              📝 AI-Assisted Meeting Notes
-            </h3>
-            <span className="text-sm text-gray-400">
-              {notesCollapsed ? "▼" : "▲"}
-            </span>
+            <h3 className="font-semibold">📝 AI-Assisted Meeting Notes</h3>
+            <span>{notesCollapsed ? "▼" : "▲"}</span>
           </button>
 
-          {/* Content */}
           {!notesCollapsed && (
-            <div className="px-5 pb-5 space-y-4">
+            <div className="px-5 pb-5 space-y-4 text-sm">
               <div>
                 <h4 className="font-semibold mb-1">Action Items</h4>
-                <ul className="list-disc ml-6 space-y-1">
+                <ul className="list-disc ml-5">
                   {meetingNotes.actions?.map((a, i) => (
                     <li key={i}>
                       [{a.speakerId}] {a.text}
@@ -613,7 +528,7 @@ function Room() {
 
               <div>
                 <h4 className="font-semibold mb-1">Decisions</h4>
-                <ul className="list-disc ml-6 space-y-1">
+                <ul className="list-disc ml-5">
                   {meetingNotes.decisions?.map((d, i) => (
                     <li key={i}>
                       [{d.speakerId}] {d.text}
@@ -624,7 +539,6 @@ function Room() {
 
               {meetingNotes.summary && (
                 <div className="italic text-gray-300">
-                  <h4 className="font-semibold text-white mb-1">Summary</h4>
                   {meetingNotes.summary}
                 </div>
               )}
@@ -634,13 +548,13 @@ function Room() {
       )}
 
       {notesError && (
-        <div className="mt-4 bg-red-700 text-white p-3 rounded max-w-3xl">
+        <div className="mt-4 bg-red-700 text-white p-3 rounded">
           ⚠️ {notesError}
         </div>
       )}
 
-      {/* Controls buttons */}
-      {!isScreenExpanded && (
+      {/* Controls */}
+      {!isRemoteExpanded && (
         <div className="fixed bottom-0 left-0 right-0 flex justify-center p-6 z-[100] pointer-events-none">
           <div className="pointer-events-auto flex flex-row items-center gap-2 md:gap-4 bg-gray-900/90 backdrop-blur-xl p-3 md:p-4 rounded-3xl border border-white/10 shadow-2xl transition-all">
             {/* Mute Button */}
@@ -677,39 +591,28 @@ function Room() {
               </span>
             </div>
 
-            {/* Screen Share - Your working logic */}
+            {/* Screen Share */}
             <div className="relative group">
               <button
-                onClick={
-                  isScreenSharing && !isSomeoneElseSharing
-                    ? stopScreenShare
-                    : startScreenShare
-                }
-                disabled={isSomeoneElseSharing}
+                onClick={isScreenSharing ? stopScreenShare : startScreenShare}
                 className={`p-3 md:p-4 rounded-2xl transition-all duration-200 ${
-                  isSomeoneElseSharing
-                    ? "bg-gray-800 text-gray-500 cursor-not-allowed opacity-50"
-                    : isScreenSharing
-                      ? "bg-blue-500/20 text-blue-400 hover:bg-blue-500/40"
-                      : "bg-white/10 text-white hover:bg-white/20"
+                  isScreenSharing
+                    ? "bg-blue-500/20 text-blue-400 hover:bg-blue-500/40"
+                    : "bg-white/10 text-white hover:bg-white/20"
                 }`}
               >
-                {isScreenSharing && !isSomeoneElseSharing ? (
+                {isScreenSharing ? (
                   <XCircle size={22} />
                 ) : (
                   <MonitorUp size={22} />
                 )}
               </button>
               <span className="absolute -top-10 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 transition-all bg-black text-white text-[10px] md:text-xs py-1 px-2 rounded whitespace-nowrap">
-                {isSomeoneElseSharing
-                  ? "Sharing Locked"
-                  : isScreenSharing
-                    ? "Stop Share"
-                    : "Share Screen"}
+                {isScreenSharing ? "Stop Share" : "Share Screen"}
               </span>
             </div>
 
-            {/* Notes transcription Button */}
+            {/* Notes Button */}
             <div className="relative group">
               <button
                 onClick={isRecording ? stopTranscription : startTranscription}
@@ -741,7 +644,7 @@ function Room() {
 
             <div className="w-[1px] h-8 bg-white/10 mx-1" />
 
-            {/* Leave Button */}
+            {/* Leave */}
             <button
               onClick={leaveCall}
               className="p-3 md:p-4 rounded-2xl bg-red-600 text-white hover:bg-red-500 transition-all shadow-lg shadow-red-900/40"
