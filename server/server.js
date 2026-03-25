@@ -80,7 +80,7 @@ app.post("/api/summarize", async (req, res) => {
       `;
 
     const completion = await cerebras.chat.completions.create({
-      model: "gpt-oss-120b",
+      model: "llama3.1-8b",
       messages: [
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: prompt },
