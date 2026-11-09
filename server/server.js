@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import Cerebras from "@cerebras/cerebras_cloud_sdk";
+import Groq from "groq-sdk";
 import "dotenv/config";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -39,11 +39,11 @@ app.get(/^(?!\/api).*/, (req, res) => {
   res.sendFile(path.join(__dirname, "public/index.html"));
 });
 
-const cerebras = new Cerebras({
-  apiKey: process.env.CEREBRAS_API_KEY,
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
 });
 
-//cerebras api call to llama LLM for meeting notes
+// Groq API call for meeting notes
 app.post("/api/summarize", async (req, res) => {
   try {
     const { transcript } = req.body;
@@ -79,8 +79,8 @@ app.post("/api/summarize", async (req, res) => {
       ${formattedTranscript}
       `;
 
-    const completion = await cerebras.chat.completions.create({
-      model: "llama3.1-8b",
+    const completion = await groq.chat.completions.create({
+      model: "openai/gpt-oss-20b",
       messages: [
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: prompt },
@@ -89,12 +89,15 @@ app.post("/api/summarize", async (req, res) => {
       max_tokens: 2000,
     });
 
-    const responseText = completion.choices[0].message.content.trim();
+    const responseText = (completion.choices[0]?.message?.content || "")
+      .trim()
+      .replace(/^```json\s*|^```\s*|```$/g, "");
+
     let parsed;
     try {
       parsed = JSON.parse(responseText);
     } catch (err) {
-      console.error("Invalid JSON from Cerebras:", responseText);
+      console.error("Invalid JSON from Groq:", responseText);
       return res.status(500).json({
         error: true,
         message: "AI returned invalid JSON",
@@ -103,7 +106,7 @@ app.post("/api/summarize", async (req, res) => {
 
     res.json(parsed);
   } catch (error) {
-    console.error("Cerebras Error:", error);
+    console.error("Groq Error:", error);
     res.status(500).json({
       error: true,
       message: "Failed to process transcript",
